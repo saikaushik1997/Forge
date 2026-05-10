@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { workflowsApi } from "../api/workflows";
 import { agentsApi } from "../api/agents";
+import { runsApi, connectRunSocket } from "../api/runs";
 import WorkflowCanvas from "../components/WorkflowCanvas";
 
 export default function Workflows() {
@@ -11,6 +12,10 @@ export default function Workflows() {
   const [newName, setNewName] = useState("");
   const [newDesc, setNewDesc] = useState("");
   const graphRef = useRef({ nodes: [], edges: [] });
+  const [runModal, setRunModal] = useState(null); // workflow to run
+  const [runInput, setRunInput] = useState("");
+  const [runEvents, setRunEvents] = useState([]);
+  const [running, setRunning] = useState(false);
 
   useEffect(() => {
     load();
@@ -50,6 +55,25 @@ export default function Workflows() {
     if (!confirm("Delete this workflow?")) return;
     await workflowsApi.delete(id);
     await load();
+  }
+
+  async function startRun(e) {
+    e.preventDefault();
+    setRunning(true);
+    setRunEvents([]);
+    try {
+      const { run_id } = await runsApi.create(runModal.id, runInput);
+      const ws = connectRunSocket(run_id, (event) => {
+        setRunEvents((prev) => [...prev, event]);
+        if (event.type === "run_complete" || event.type === "run_failed") {
+          setRunning(false);
+          ws.close();
+        }
+      });
+    } catch (e) {
+      setRunEvents([{ type: "run_failed", error: e.message }]);
+      setRunning(false);
+    }
   }
 
   if (editing) {
@@ -131,11 +155,60 @@ export default function Workflows() {
                 {wf.graph_definition?.nodes?.length || 0} agents · {wf.graph_definition?.edges?.length || 0} connections
               </p>
               <div style={{ display: "flex", gap: 8 }}>
-                <button className="btn btn-ghost" style={{ flex: 1 }} onClick={() => openCanvas(wf)}>Open Canvas</button>
-                <button className="btn btn-danger" onClick={() => deleteWorkflow(wf.id)}>Delete</button>
+                <button className="btn btn-ghost" style={{ flex: 1 }} onClick={() => openCanvas(wf)}>Canvas</button>
+                <button className="btn btn-primary" style={{ flex: 1 }} onClick={() => { setRunModal(wf); setRunInput(""); setRunEvents([]); }}>▶ Run</button>
+                <button className="btn btn-danger" onClick={() => deleteWorkflow(wf.id)}>Del</button>
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {runModal && (
+        <div className="modal-backdrop" onClick={() => !running && setRunModal(null)}>
+          <div className="modal" style={{ width: 600 }} onClick={(e) => e.stopPropagation()}>
+            <h2>▶ Run — {runModal.name}</h2>
+            <form onSubmit={startRun}>
+              <div className="form-group">
+                <label>Input</label>
+                <textarea required rows={3} value={runInput} onChange={(e) => setRunInput(e.target.value)} placeholder="What should the agents work on?" disabled={running} />
+              </div>
+              {runEvents.length === 0 && !running && (
+                <div className="modal-actions">
+                  <button type="button" className="btn btn-ghost" onClick={() => setRunModal(null)}>Cancel</button>
+                  <button type="submit" className="btn btn-primary">Run Workflow</button>
+                </div>
+              )}
+            </form>
+
+            {(running || runEvents.length > 0) && (
+              <div style={{ marginTop: 16 }}>
+                <p style={{ fontSize: 12, color: "#64748b", marginBottom: 8 }}>LIVE EVENTS</p>
+                <div style={{ background: "#0f1117", borderRadius: 8, padding: 12, maxHeight: 300, overflowY: "auto", fontFamily: "monospace", fontSize: 12 }}>
+                  {runEvents.map((ev, i) => (
+                    <div key={i} style={{ marginBottom: 8, color: ev.type === "run_failed" ? "#f87171" : ev.type === "run_complete" ? "#4ade80" : "#e2e8f0" }}>
+                      {ev.type === "node_start" && <span>🔄 <b>{ev.agent}</b> started</span>}
+                      {ev.type === "tool_call" && <span style={{ color: "#facc15" }}>🔧 <b>{ev.agent}</b> calling <b>{ev.tool}</b></span>}
+                      {ev.type === "node_complete" && (
+                        <div>
+                          <span>✅ <b>{ev.agent}</b> finished ({ev.tokens} tokens)</span>
+                          <div style={{ color: "#94a3b8", marginTop: 4, whiteSpace: "pre-wrap" }}>{ev.output}</div>
+                        </div>
+                      )}
+                      {ev.type === "run_complete" && <span>🎉 Done! Total tokens: {ev.tokens}</span>}
+                      {ev.type === "run_failed" && <span>❌ Failed: {ev.error}</span>}
+                    </div>
+                  ))}
+                  {running && <span style={{ color: "#7c6af7" }}>⏳ Running…</span>}
+                </div>
+                {!running && (
+                  <div className="modal-actions">
+                    <button className="btn btn-ghost" onClick={() => setRunModal(null)}>Close</button>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
         </div>
       )}
 
