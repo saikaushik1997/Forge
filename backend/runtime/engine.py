@@ -1,5 +1,6 @@
 import os
 import asyncio
+from collections import defaultdict
 from datetime import datetime
 from typing import TypedDict, Annotated
 import operator
@@ -13,11 +14,65 @@ from models.workflow import Workflow
 from config import settings
 
 
+MAX_LOOP_ITERATIONS = 3
+
+
 class AgentState(TypedDict):
     messages: Annotated[list, operator.add]       # initial user msg + all assistant msgs
     agent_outputs: Annotated[list, operator.add]  # {"agent": name, "content": text} per node
     run_id: str
     token_count: Annotated[int, operator.add]
+    loop_count: Annotated[int, operator.add]      # increments each node execution; caps feedback loops
+
+
+def _find_back_edges(nodes: list, edges: list) -> set:
+    """DFS to find back edges — edges that create cycles."""
+    adj = defaultdict(list)
+    for e in edges:
+        adj[e["source"]].append(e["target"])
+
+    visited, rec_stack, back_edges = set(), set(), set()
+
+    def dfs(node):
+        visited.add(node)
+        rec_stack.add(node)
+        for nb in adj[node]:
+            if nb not in visited:
+                dfs(nb)
+            elif nb in rec_stack:
+                back_edges.add((node, nb))
+        rec_stack.discard(node)
+
+    for n in nodes:
+        if n["id"] not in visited:
+            dfs(n["id"])
+
+    return back_edges
+
+
+def _make_router(outgoing: list, back_edge_pairs: set):
+    """Return a LangGraph routing function for a node with conditions or cycles."""
+    def router(state: AgentState):
+        output = state["agent_outputs"][-1]["content"] if state["agent_outputs"] else ""
+        loop_count = state.get("loop_count", 0)
+
+        # Separate back edges from forward edges
+        forward = [e for e in outgoing if (e["source"], e["target"]) not in back_edge_pairs]
+        eligible = forward if loop_count >= MAX_LOOP_ITERATIONS else outgoing
+
+        # Conditional edges first (keyword matching)
+        for e in eligible:
+            if e.get("condition") and e["condition"].lower() in output.lower():
+                return e["target"]
+
+        # Unconditional edges
+        for e in eligible:
+            if not e.get("condition"):
+                return e["target"]
+
+        return END
+
+    return router
 
 
 TOOL_DEFINITIONS = {
@@ -138,11 +193,11 @@ def make_agent_node(agent_config: dict, run_id: str, on_event):
 
         await on_event({"type": "node_complete", "agent": agent_config["name"], "output": output, "tokens": total_tokens, "run_id": run_id})
 
-        # Return only updated keys — LangGraph merges via reducers (operator.add for lists/int)
         return {
             "agent_outputs": [{"agent": agent_config["name"], "content": output}],
             "messages": [{"role": "assistant", "agent": agent_config["name"], "content": output}],
             "token_count": total_tokens,
+            "loop_count": 1,
         }
 
     node.__name__ = agent_config["name"]
@@ -166,16 +221,30 @@ async def execute_workflow(workflow, agents_map, run_input, run_id, on_event, db
             raise ValueError(f"Agent {agent_id} not found")
         builder.add_node(node["id"], make_agent_node(agent, run_id, on_event))
 
-    for edge in edges:
-        builder.add_edge(edge["source"], edge["target"])
+    back_edge_pairs = _find_back_edges(nodes, edges)
+    edges_by_source = defaultdict(list)
+    for e in edges:
+        edges_by_source[e["source"]].append(e)
 
     entry = nodes[0]["id"]
     builder.set_entry_point(entry)
 
-    sources = {e["source"] for e in edges}
     for node in nodes:
-        if node["id"] not in sources:
-            builder.add_edge(node["id"], END)
+        node_id = node["id"]
+        outgoing = edges_by_source[node_id]
+        has_condition = any(e.get("condition") for e in outgoing)
+        has_back_edge = any((node_id, e["target"]) in back_edge_pairs for e in outgoing)
+
+        if not outgoing:
+            builder.add_edge(node_id, END)
+        elif has_condition or has_back_edge:
+            router = _make_router(outgoing, back_edge_pairs)
+            targets = {e["target"]: e["target"] for e in outgoing}
+            targets[END] = END
+            builder.add_conditional_edges(node_id, router, targets)
+        else:
+            for e in outgoing:
+                builder.add_edge(e["source"], e["target"])
 
     graph = builder.compile()
 
@@ -184,6 +253,7 @@ async def execute_workflow(workflow, agents_map, run_input, run_id, on_event, db
         "agent_outputs": [],
         "run_id": run_id,
         "token_count": 0,
+        "loop_count": 0,
     })
 
     prev_agent = "user"

@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import asynccontextmanager
 import traceback
 from fastapi import FastAPI, Request
@@ -8,8 +9,10 @@ import models  # noqa: F401 — registers all ORM models before create_all
 from api.agents import router as agents_router
 from api.workflows import router as workflows_router
 from api.runs import router as runs_router
+from api.schedules import router as schedules_router
 from bot.telegram_bot import start_bots, stop_bots
 from runtime.templates import seed_templates
+from runtime.scheduler import scheduler_loop
 from database import AsyncSessionLocal
 
 
@@ -19,7 +22,9 @@ async def lifespan(app: FastAPI):
     async with AsyncSessionLocal() as db:
         await seed_templates(db)
     app.state.bots = await start_bots()
+    app.state.scheduler = asyncio.create_task(scheduler_loop())
     yield
+    app.state.scheduler.cancel()
     await stop_bots(app.state.bots)
 
 
@@ -35,6 +40,7 @@ app.add_middleware(
 app.include_router(agents_router, prefix="/api")
 app.include_router(workflows_router, prefix="/api")
 app.include_router(runs_router, prefix="/api")
+app.include_router(schedules_router, prefix="/api")
 
 
 @app.exception_handler(Exception)
