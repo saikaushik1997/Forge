@@ -80,13 +80,23 @@ Telegram was chosen over Slack and WhatsApp because:
 
 ## Features
 
-- **Agent CRUD** — create agents with name, role, system prompt, model, tools, memory settings, and guardrails
-- **Visual Workflow Builder** — drag-and-drop canvas (React Flow) to connect agents, set conditions, and build feedback loops
-- **Pre-built Templates** — "Research & Summarize" and "Triage & Respond" workflows ready to use out of the box
-- **Real Execution** — LangGraph actually runs agents; tool calls (web search, etc.) execute for real
-- **Telegram Integration** — chat with a configured agent through Telegram; it can delegate to other agents behind the scenes
-- **Live Monitoring** — real-time execution logs, inter-agent messages, and token/cost tracking streamed via WebSocket
-- **Persistent History** — all runs, messages, and agent states stored in PostgreSQL and browsable in the UI
+**Agents**
+- Full CRUD — name, role, system prompt, model, tools, guardrails (max tokens), memory toggle, messaging channel config
+- **Memory** — when enabled, the agent's last 5 outputs from past runs are injected into its system prompt at execution time, giving it continuity across separate workflow runs
+- **Tools** — web search (Tavily), calculator, datetime; tool calls are real, not simulated
+- **Telegram integration** — configure a bot token per agent; the agent becomes conversational with per-chat history and `/start` / `/reset` commands
+
+**Workflows**
+- **Visual builder** — drag-and-drop canvas (React Flow); arrowheads show direction; start node highlighted green, end nodes red; select + Backspace to delete nodes or edges
+- **Conditional edges** — click any edge to set a keyword condition; the engine only follows that edge if the keyword appears in the upstream agent's output
+- **Feedback loops** — draw a backward edge to create a cycle; the engine detects it via DFS and caps iterations at 3 before forcing the forward path
+- **Parallel execution** — when multiple agents have no dependency between them, LangGraph runs them concurrently via `asyncio.gather`; a fan-in agent receives all their combined outputs
+- **Schedules** — attach cron triggers to any workflow (⏰ button); the scheduler fires runs in the background with a configurable default input
+- **Pre-built templates** — "Research & Summarize" and "Triage & Respond" seeded on startup; "Use Template" clones them into editable copies
+
+**Platform**
+- **Live monitoring** — real-time execution events (node start, tool calls, node complete) streamed via WebSocket; inter-agent messages and token counts visible per run
+- **Persistent history** — all runs, messages, and agent outputs stored in PostgreSQL and browsable in the Monitor page
 
 ---
 
@@ -247,8 +257,13 @@ The form renders fields automatically — no other frontend changes needed.
 
 | Decision | Chosen | Rejected | Reason |
 |---|---|---|---|
-| AI Runtime | LangGraph | CrewAI, AutoGen | Explicit state machine maps to visual builder |
+| AI Runtime | LangGraph | CrewAI, AutoGen | Explicit state machine maps to visual builder; native parallel execution |
 | Frontend | React + Vite | Next.js | No SSR needed, less overhead |
 | Database | PostgreSQL | SQLite | Concurrent writes, relational queries |
 | Channel | Telegram | Slack, WhatsApp | Instant setup, free API, async library |
-| Async | Redis pub/sub | Celery, RabbitMQ | Simplest fit for pub/sub agent messaging |
+| Async (intra-workflow) | LangGraph state machine | Redis queues | Already orchestrates execution; Redis would duplicate work |
+| Async (cross-system) | Redis pub/sub | Celery, RabbitMQ | Simplest fit for pub/sub; no worker processes needed |
+| Memory storage | PostgreSQL (Message table) | Redis / vector DB | Data already there; simple recency window is sufficient for now |
+| Scheduling | croniter + asyncio loop | APScheduler, Celery Beat | No extra dependencies; fits cleanly in FastAPI lifespan |
+| Feedback loop termination | loop_count in LangGraph state | External flag / timeout | State is already shared across nodes; incrementing a counter is zero overhead |
+| Conditional routing | Keyword matching in output | LLM-based routing | Deterministic, fast, no extra API calls; sufficient for structured agent prompts |
