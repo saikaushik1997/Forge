@@ -29,6 +29,7 @@ async def _fire_run(schedule_id: str):
                 "id": a.id, "name": a.name, "role": a.role,
                 "system_prompt": a.system_prompt, "model": a.model,
                 "tools": a.tools or [], "guardrails": a.guardrails,
+                "memory_enabled": a.memory_enabled,
             }
             for a in result.scalars().all()
         }

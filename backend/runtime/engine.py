@@ -8,6 +8,7 @@ import operator
 import anthropic
 from langgraph.graph import StateGraph, END
 
+from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 from models.run import Message
 from models.workflow import Workflow
@@ -131,6 +132,9 @@ def make_agent_node(agent_config: dict, run_id: str, on_event):
     if tools:
         tool_list = ", ".join(t["name"] for t in tools)
         system_prompt += f"\n\nYou have access to these tools: {tool_list}. Always use them to get accurate, up-to-date information rather than relying on training data."
+    if agent_config.get("past_messages"):
+        memory_block = "\n\n---\n\n".join(agent_config["past_messages"])
+        system_prompt += f"\n\n## Memory from previous runs\nThese are your past responses — use them as context for continuity:\n{memory_block}"
 
     async def node(state: AgentState) -> dict:
         await on_event({"type": "node_start", "agent": agent_config["name"], "run_id": run_id})
@@ -220,6 +224,19 @@ async def execute_workflow(workflow, agents_map, run_input, run_id, on_event, db
         if not agent:
             raise ValueError(f"Agent {agent_id} not found")
         builder.add_node(node["id"], make_agent_node(agent, run_id, on_event))
+
+    # Inject memory for enabled agents before building the graph
+    for node in nodes:
+        agent = agents_map.get(node["data"]["agent_id"])
+        if agent and agent.get("memory_enabled"):
+            result = await db.execute(
+                select(Message)
+                .where(Message.to_agent == agent["name"])
+                .order_by(desc(Message.timestamp))
+                .limit(5)
+            )
+            past = list(reversed(result.scalars().all()))
+            agent["past_messages"] = [m.content for m in past]
 
     back_edge_pairs = _find_back_edges(nodes, edges)
     edges_by_source = defaultdict(list)

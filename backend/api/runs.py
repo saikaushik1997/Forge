@@ -46,7 +46,7 @@ async def create_run(body: RunCreate, db: AsyncSession = Depends(get_db)):
     agent_ids = [n["data"]["agent_id"] for n in nodes]
     result = await db.execute(select(Agent).where(Agent.id.in_(agent_ids)))
     agents_list = result.scalars().all()
-    agents_map = {a.id: {"id": a.id, "name": a.name, "role": a.role, "system_prompt": a.system_prompt, "model": a.model, "tools": a.tools or [], "guardrails": a.guardrails} for a in agents_list}
+    agents_map = {a.id: {"id": a.id, "name": a.name, "role": a.role, "system_prompt": a.system_prompt, "model": a.model, "tools": a.tools or [], "guardrails": a.guardrails, "memory_enabled": a.memory_enabled} for a in agents_list}
 
     async def on_event(event: dict):
         await queue.put(event)
