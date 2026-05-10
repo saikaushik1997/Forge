@@ -1,7 +1,8 @@
 import os
 import asyncio
 from datetime import datetime
-from typing import TypedDict
+from typing import TypedDict, Annotated
+import operator
 
 import anthropic
 from langgraph.graph import StateGraph, END
@@ -13,10 +14,10 @@ from config import settings
 
 
 class AgentState(TypedDict):
-    messages: list
-    current_output: str
+    messages: Annotated[list, operator.add]       # initial user msg + all assistant msgs
+    agent_outputs: Annotated[list, operator.add]  # {"agent": name, "content": text} per node
     run_id: str
-    token_count: int
+    token_count: Annotated[int, operator.add]
 
 
 TOOL_DEFINITIONS = {
@@ -76,10 +77,16 @@ def make_agent_node(agent_config: dict, run_id: str, on_event):
         tool_list = ", ".join(t["name"] for t in tools)
         system_prompt += f"\n\nYou have access to these tools: {tool_list}. Always use them to get accurate, up-to-date information rather than relying on training data."
 
-    async def node(state: AgentState) -> AgentState:
+    async def node(state: AgentState) -> dict:
         await on_event({"type": "node_start", "agent": agent_config["name"], "run_id": run_id})
 
-        messages = [{"role": "user", "content": state["current_output"] or state["messages"][0]["content"]}]
+        # Fan-in: concatenate all prior agent outputs; entry node uses initial user message
+        if state["agent_outputs"]:
+            input_content = "\n\n---\n\n".join(o["content"] for o in state["agent_outputs"])
+        else:
+            input_content = state["messages"][0]["content"]
+
+        messages = [{"role": "user", "content": input_content}]
         total_tokens = 0
         output = ""
         first_call = True
@@ -106,7 +113,7 @@ def make_agent_node(agent_config: dict, run_id: str, on_event):
                     if block.type == "text":
                         output = block.text
                 if not output:
-                    output = messages[-1]["content"] if isinstance(messages[-1]["content"], str) else state["current_output"]
+                    output = input_content
                 break
 
             if response.stop_reason == "tool_use":
@@ -124,20 +131,18 @@ def make_agent_node(agent_config: dict, run_id: str, on_event):
                 messages.append({"role": "user", "content": tool_results})
 
                 if tool_rounds >= max_tool_rounds:
-                    # Force a text response — drop tools so the model must conclude
                     kwargs.pop("tools", None)
                     kwargs.pop("tool_choice", None)
             else:
-                # Unexpected stop reason
                 break
 
         await on_event({"type": "node_complete", "agent": agent_config["name"], "output": output, "tokens": total_tokens, "run_id": run_id})
 
+        # Return only updated keys — LangGraph merges via reducers (operator.add for lists/int)
         return {
-            **state,
-            "current_output": output,
-            "messages": state["messages"] + [{"role": "assistant", "agent": agent_config["name"], "content": output}],
-            "token_count": state["token_count"] + total_tokens,
+            "agent_outputs": [{"agent": agent_config["name"], "content": output}],
+            "messages": [{"role": "assistant", "agent": agent_config["name"], "content": output}],
+            "token_count": total_tokens,
         }
 
     node.__name__ = agent_config["name"]
@@ -176,7 +181,7 @@ async def execute_workflow(workflow, agents_map, run_input, run_id, on_event, db
 
     final_state = await graph.ainvoke({
         "messages": [{"role": "user", "content": run_input}],
-        "current_output": run_input,
+        "agent_outputs": [],
         "run_id": run_id,
         "token_count": 0,
     })

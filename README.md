@@ -27,7 +27,7 @@ Build, configure, and orchestrate AI agents into collaborative workflows. Real L
 └─────────────────────────────────────────────────────────────┘
 ```
 
-Agents communicate asynchronously through Redis pub/sub. The LangGraph runtime manages agent state and tool execution. FastAPI persists everything to PostgreSQL and streams real-time logs to the UI via WebSocket.
+Within a workflow, LangGraph manages async agent execution — sequential by default, parallel where the graph fans out. Redis pub/sub handles cross-system async: Telegram → workflow triggers, and run events → WebSocket → UI. FastAPI persists everything to PostgreSQL.
 
 ---
 
@@ -37,10 +37,11 @@ Agents communicate asynchronously through Redis pub/sub. The LangGraph runtime m
 The AI/ML ecosystem is Python-first. LangGraph, the Anthropic SDK, and every serious agent tooling library (web search, code execution, embeddings) have first-class Python support. Using Python means zero friction integrating these tools — no wrapper libraries, no translation layers.
 
 ### AI Runtime: LangGraph
-LangGraph was chosen over CrewAI and AutoGen for two reasons:
+LangGraph was chosen over CrewAI and AutoGen for three reasons:
 
 1. **Control.** LangGraph models agent workflows as explicit state machines (nodes + edges). Conditions, feedback loops, and branching are first-class — exactly what the visual workflow builder needs to reflect. CrewAI abstracts this away, making it hard to expose configurability in a UI.
 2. **Observability.** LangGraph's execution graph maps 1:1 to what we show in the UI. Every node execution, state transition, and tool call is inspectable, which powers the live monitoring dashboard.
+3. **Native async parallelism.** When the workflow graph fans out to multiple nodes with no dependency between them (e.g. A → B and A → C), LangGraph executes them concurrently via `asyncio.gather` — no extra infrastructure needed. The shared `AgentState` uses `Annotated[list, operator.add]` reducers so concurrent writes merge safely rather than overwriting each other. The fan-in node (D) then receives the combined outputs of all parallel branches.
 
 AutoGen was ruled out because its conversational multi-agent model doesn't fit structured workflows with explicit routing conditions.
 
@@ -60,11 +61,13 @@ PostgreSQL runs fully locally inside Docker Compose alongside the other services
 - It's the realistic choice for a production-grade platform
 
 ### Async Messaging: Redis (pub/sub)
-Agent-to-agent communication is asynchronous by requirement. The approach depends on scope:
+There are two distinct layers of async communication in Forge, and it's worth being precise about which handles what.
 
-**Within a single workflow**, LangGraph manages execution. Nodes run sequentially by default — this is intentional, giving deterministic and inspectable execution. Where true parallelism is needed (e.g. Research Bot and Fact-Check Bot running simultaneously), LangGraph's parallel branching runs those nodes concurrently and merges results before continuing.
+**Within a workflow**, async is handled entirely by LangGraph — not Redis. Each agent node is an `async` function. Sequential nodes run one after another (deterministic, inspectable). Parallel branches (when the graph fans out) run concurrently via `asyncio.gather`, with `Annotated` state reducers merging their outputs safely. No message broker is needed here; LangGraph's state machine is the transport.
 
-**Across workflow boundaries**, Redis pub/sub handles async handoffs: incoming Telegram messages trigger workflow runs, completed runs stream events to the monitoring UI, and one workflow can trigger another — all without any component blocking on another. Redis runs as a Docker Compose service with no external dependency.
+**Across the system boundary**, Redis pub/sub handles async handoffs: incoming Telegram messages trigger workflow runs without blocking the bot, completed runs stream events to the monitoring UI via WebSocket, and external triggers (scheduled jobs, webhooks) can fire workflows without coupling to the HTTP layer. Redis runs as a Docker Compose service with no external dependency.
+
+The alternative — routing all agent-to-agent communication through Redis queues — would mean rebuilding LangGraph's orchestration from scratch (delivery guarantees, fan-in coordination, error propagation) for no observable benefit in a single-host deployment.
 
 ### Messaging Channel: Telegram
 Telegram was chosen over Slack and WhatsApp because:
@@ -130,18 +133,26 @@ forge/
 
 ## Running Tests
 
-Tests live in `backend/tests/` and split into two suites.
+46 tests across two suites. All pass against a running stack.
 
-**Unit tests** — no server, no API key, run instantly:
+| Suite | File | Tests | Needs server? |
+|---|---|---|---|
+| Unit | `test_unit_crypto.py` | 5 | No |
+| Unit | `test_unit_agent_configs.py` | 11 | No |
+| Unit | `test_unit_templates.py` | 16 | No |
+| Integration | `test_agents.py` | 9 | Yes |
+| Integration | `test_workflow_execution.py` | 5 | Yes + API key |
+
+**Unit tests** — no server, no API key, run in ~1s:
 
 ```bash
 cd backend
 pytest tests/test_unit_crypto.py tests/test_unit_agent_configs.py tests/test_unit_templates.py -v
 ```
 
-Covers: Fernet encrypt/decrypt roundtrips, channel config masking and encryption helpers, template graph structure validation.
+Covers: Fernet encrypt/decrypt roundtrips, channel config masking and encryption helpers, template graph structure and edge validation.
 
-**Integration tests** — require a running backend and a valid `ANTHROPIC_API_KEY`:
+**Integration tests** — hit a live backend at `localhost:8001`:
 
 ```bash
 # Start the stack first
@@ -151,7 +162,7 @@ cd backend
 pytest tests/test_agents.py tests/test_workflow_execution.py -v
 ```
 
-Covers: full agent CRUD lifecycle, workflow run completion, token accounting, message persistence, 404 handling.
+Covers: full agent CRUD lifecycle, workflow run completion, token accounting, inter-agent message persistence, 404 error handling.
 
 **Run everything:**
 

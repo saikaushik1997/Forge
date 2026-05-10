@@ -55,7 +55,7 @@ async def create_run(body: RunCreate, db: AsyncSession = Depends(get_db)):
         async with AsyncSessionLocal() as session:
             try:
                 final_state = await execute_workflow(workflow, agents_map, body.input, run.id, on_event, session)
-                output = final_state["current_output"]
+                output = final_state["agent_outputs"][-1]["content"] if final_state["agent_outputs"] else ""
                 tokens = final_state["token_count"]
                 run_record = await session.get(WorkflowRun, run.id)
                 run_record.status = "completed"
