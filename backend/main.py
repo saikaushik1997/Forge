@@ -6,6 +6,7 @@ from fastapi.responses import JSONResponse
 from database import create_tables
 import models  # noqa: F401 — registers all ORM models before create_all
 from api.agents import router as agents_router
+from api.workflows import router as workflows_router
 
 
 @asynccontextmanager
@@ -24,6 +25,7 @@ app.add_middleware(
 )
 
 app.include_router(agents_router, prefix="/api")
+app.include_router(workflows_router, prefix="/api")
 
 
 @app.exception_handler(Exception)
