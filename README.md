@@ -128,6 +128,39 @@ forge/
 
 ---
 
+## Running Tests
+
+Tests live in `backend/tests/` and split into two suites.
+
+**Unit tests** — no server, no API key, run instantly:
+
+```bash
+cd backend
+pytest tests/test_unit_crypto.py tests/test_unit_agent_configs.py tests/test_unit_templates.py -v
+```
+
+Covers: Fernet encrypt/decrypt roundtrips, channel config masking and encryption helpers, template graph structure validation.
+
+**Integration tests** — require a running backend and a valid `ANTHROPIC_API_KEY`:
+
+```bash
+# Start the stack first
+docker compose up -d
+
+cd backend
+pytest tests/test_agents.py tests/test_workflow_execution.py -v
+```
+
+Covers: full agent CRUD lifecycle, workflow run completion, token accounting, message persistence, 404 handling.
+
+**Run everything:**
+
+```bash
+cd backend && pytest -v
+```
+
+---
+
 ## Adding a New Workflow Template
 
 Templates are defined in [`backend/runtime/templates.py`](backend/runtime/templates.py) as entries in the `TEMPLATES` list.
