@@ -130,15 +130,72 @@ forge/
 
 ## Adding a New Workflow Template
 
-1. Define the template in `backend/runtime/templates/` as a LangGraph `StateGraph`
-2. Register it in `backend/runtime/templates/__init__.py`
-3. It will appear automatically in the UI template picker
+Templates are defined in [`backend/runtime/templates.py`](backend/runtime/templates.py) as entries in the `TEMPLATES` list.
+
+1. Add a new entry to `TEMPLATES`:
+
+```python
+{
+    "workflow": {
+        "name": "My Template",
+        "description": "What this pipeline does.",
+    },
+    "agents": [
+        {
+            "name": "Agent A",
+            "role": "Role",
+            "system_prompt": "You are ...",
+            "model": "claude-sonnet-4-6",
+            "tools": ["web_search"],   # web_search | calculator | datetime
+            "guardrails": {"max_tokens": 1000},
+        },
+        # more agents...
+    ],
+    "edges": [("Agent A", "Agent B")],     # directed connections by agent name
+    "positions": [(250, 80), (250, 280)],  # canvas (x, y) per agent
+}
+```
+
+2. Clear the existing seeded templates so they re-seed on next startup:
+
+```bash
+docker exec -it forge-postgres-1 psql -U forge -d forge \
+  -c "DELETE FROM workflows WHERE is_template = TRUE;"
+```
+
+3. Restart the backend — templates seed automatically at startup and appear in the UI under **Templates**.
+
+---
 
 ## Adding a New Messaging Channel
 
-1. Create a handler in `backend/channels/` implementing the `ChannelAdapter` interface (`send`, `receive`, `start`)
-2. Register it in `backend/channels/__init__.py`
-3. Add the channel option to the agent configuration form in the frontend
+Channel configuration is stored as JSON on each agent (`channel_configs`), so adding a new channel requires no database schema changes.
+
+**1. Add UI fields** — open [`frontend/src/pages/Agents.jsx`](frontend/src/pages/Agents.jsx) and add the channel to `CHANNEL_FIELDS`:
+
+```js
+const CHANNEL_FIELDS = {
+  telegram: [
+    { key: "bot_token", label: "Bot Token", placeholder: "Token from @BotFather" },
+  ],
+  slack: [
+    { key: "bot_token",       label: "Bot Token",       placeholder: "xoxb-..." },
+    { key: "signing_secret",  label: "Signing Secret",  placeholder: "..." },
+  ],
+  // whatsapp, discord, etc.
+};
+```
+
+The form renders fields automatically — no other frontend changes needed.
+
+**2. Create a bot handler** — add `backend/bot/slack_bot.py` following the same structure as [`telegram_bot.py`](backend/bot/telegram_bot.py):
+- Read agents where `channel_configs.slack.enabled == true`
+- Decrypt `channel_configs.slack.bot_token` via `bot.crypto.decrypt_token`
+- Start a polling/webhook listener per unique token
+
+**3. Wire into the lifespan** — in [`backend/main.py`](backend/main.py), import and call your new `start_bots` / `stop_bots` alongside the Telegram ones.
+
+**4. Add config to `.env`** if the channel needs additional app-level credentials (e.g. a Slack app token), and add the field to [`backend/config.py`](backend/config.py).
 
 ---
 

@@ -14,5 +14,6 @@ class Workflow(Base):
     description: Mapped[str] = mapped_column(Text, default="")
     graph_definition: Mapped[dict] = mapped_column(JSON, default=lambda: {"nodes": [], "edges": []})
     is_template: Mapped[bool] = mapped_column(Boolean, default=False)
+    telegram_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc, onupdate=now_utc)

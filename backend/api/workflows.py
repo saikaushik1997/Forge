@@ -26,6 +26,7 @@ class WorkflowUpdate(BaseModel):
     description: Optional[str] = None
     graph_definition: Optional[GraphDefinition] = None
     is_template: Optional[bool] = None
+    telegram_enabled: Optional[bool] = None
 
 
 class WorkflowResponse(BaseModel):
@@ -34,6 +35,7 @@ class WorkflowResponse(BaseModel):
     description: str
     graph_definition: dict
     is_template: bool
+    telegram_enabled: bool
     created_at: str
     updated_at: str
 
@@ -45,6 +47,7 @@ class WorkflowResponse(BaseModel):
             description=w.description or "",
             graph_definition=w.graph_definition or {"nodes": [], "edges": []},
             is_template=w.is_template,
+            telegram_enabled=w.telegram_enabled or False,
             created_at=w.created_at.isoformat(),
             updated_at=w.updated_at.isoformat(),
         )

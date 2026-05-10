@@ -79,10 +79,12 @@ def make_agent_node(agent_config: dict, run_id: str, on_event):
     async def node(state: AgentState) -> AgentState:
         await on_event({"type": "node_start", "agent": agent_config["name"], "run_id": run_id})
 
-        messages = [{"role": "user", "content": state["current_output"]}]
+        messages = [{"role": "user", "content": state["current_output"] or state["messages"][0]["content"]}]
         total_tokens = 0
         output = ""
         first_call = True
+        tool_rounds = 0
+        max_tool_rounds = 5
 
         while True:
             kwargs = dict(
@@ -103,9 +105,12 @@ def make_agent_node(agent_config: dict, run_id: str, on_event):
                 for block in response.content:
                     if block.type == "text":
                         output = block.text
+                if not output:
+                    output = messages[-1]["content"] if isinstance(messages[-1]["content"], str) else state["current_output"]
                 break
 
             if response.stop_reason == "tool_use":
+                tool_rounds += 1
                 messages.append({"role": "assistant", "content": response.content})
                 tool_results = []
                 for block in response.content:
@@ -117,6 +122,11 @@ def make_agent_node(agent_config: dict, run_id: str, on_event):
                         tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": result})
 
                 messages.append({"role": "user", "content": tool_results})
+
+                if tool_rounds >= max_tool_rounds:
+                    # Force a text response — drop tools so the model must conclude
+                    kwargs.pop("tools", None)
+                    kwargs.pop("tool_choice", None)
             else:
                 # Unexpected stop reason
                 break

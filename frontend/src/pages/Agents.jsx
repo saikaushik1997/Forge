@@ -5,6 +5,12 @@ const TOOLS = ["web_search", "calculator", "datetime"];
 const MODELS = ["claude-sonnet-4-6", "claude-haiku-4-5-20251001", "claude-opus-4-7"];
 const CHANNELS = ["", "telegram"];
 
+const CHANNEL_FIELDS = {
+  telegram: [
+    { key: "bot_token", label: "Bot Token", placeholder: "Token from @BotFather" },
+  ],
+};
+
 const defaultForm = {
   name: "",
   role: "",
@@ -13,7 +19,7 @@ const defaultForm = {
   tools: [],
   memory_enabled: false,
   guardrails: { max_tokens: 2000 },
-  channel: "",
+  channel_configs: {},
 };
 
 export default function Agents() {
@@ -43,6 +49,12 @@ export default function Agents() {
 
   function openEdit(agent) {
     setEditing(agent.id);
+    // Rebuild channel_configs from masked response — preserve enabled flags, clear tokens
+    const configs = {};
+    for (const [ch, cfg] of Object.entries(agent.channel_configs || {})) {
+      configs[ch] = { enabled: cfg.enabled || false };
+      // Don't pre-fill tokens — user must re-enter to change
+    }
     setForm({
       name: agent.name,
       role: agent.role,
@@ -51,7 +63,7 @@ export default function Agents() {
       tools: agent.tools,
       memory_enabled: agent.memory_enabled,
       guardrails: agent.guardrails,
-      channel: agent.channel || "",
+      channel_configs: configs,
     });
     setShowModal(true);
   }
@@ -60,11 +72,15 @@ export default function Agents() {
     e.preventDefault();
     setLoading(true);
     try {
-      const payload = { ...form, channel: form.channel || null };
+      const payload = { ...form };
       if (editing) {
         await agentsApi.update(editing, payload);
       } else {
         await agentsApi.create(payload);
+      }
+      const hasChannel = Object.values(form.channel_configs || {}).some(c => c.enabled);
+      if (hasChannel) {
+        await fetch("/api/bots/reload", { method: "POST" });
       }
       setShowModal(false);
       await load();
@@ -116,6 +132,9 @@ export default function Agents() {
                 <span className="badge badge-purple">{agent.model.split("-").slice(1, 3).join("-")}</span>
                 {agent.tools.map((t) => <span key={t} className="badge badge-yellow">{t}</span>)}
                 {agent.memory_enabled && <span className="badge badge-green">memory</span>}
+                {Object.entries(agent.channel_configs || {}).filter(([, c]) => c.enabled).map(([ch]) => (
+                  <span key={ch} className="badge badge-green">✈ {ch}</span>
+                ))}
               </div>
               <div style={{ display: "flex", gap: 8 }}>
                 <button className="btn btn-ghost" style={{ flex: 1 }} onClick={() => openEdit(agent)}>Edit</button>
@@ -145,25 +164,17 @@ export default function Agents() {
                 <label>System Prompt</label>
                 <textarea required value={form.system_prompt} onChange={(e) => setForm((f) => ({ ...f, system_prompt: e.target.value }))} placeholder="You are a research assistant..." rows={4} />
               </div>
-              <div className="form-row">
-                <div className="form-group">
-                  <label>Model</label>
-                  <select value={form.model} onChange={(e) => setForm((f) => ({ ...f, model: e.target.value }))}>
-                    {MODELS.map((m) => <option key={m} value={m}>{m}</option>)}
-                  </select>
-                </div>
-                <div className="form-group">
-                  <label>Channel</label>
-                  <select value={form.channel} onChange={(e) => setForm((f) => ({ ...f, channel: e.target.value }))}>
-                    {CHANNELS.map((c) => <option key={c} value={c}>{c || "None"}</option>)}
-                  </select>
-                </div>
+              <div className="form-group">
+                <label>Model</label>
+                <select value={form.model} onChange={(e) => setForm((f) => ({ ...f, model: e.target.value }))}>
+                  {MODELS.map((m) => <option key={m} value={m}>{m}</option>)}
+                </select>
               </div>
               <div className="form-group">
                 <label>Tools</label>
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
                   {TOOLS.map((tool) => (
-                    <label key={tool} style={{ display: "flex", alignItems: "center", gap: 4, cursor: "pointer", fontSize: 13 }}>
+                    <label key={tool} style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontSize: 13 }}>
                       <input type="checkbox" checked={form.tools.includes(tool)} onChange={() => toggleTool(tool)} />
                       {tool}
                     </label>
@@ -171,10 +182,48 @@ export default function Agents() {
                 </div>
               </div>
               <div className="form-group">
-                <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
-                  <input type="checkbox" checked={form.memory_enabled} onChange={(e) => setForm((f) => ({ ...f, memory_enabled: e.target.checked }))} />
-                  Enable Memory
-                </label>
+                <label>Options</label>
+                <div style={{ display: "flex", gap: 20, justifyContent: "center" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontSize: 13 }}
+                    onClick={() => setForm((f) => ({ ...f, memory_enabled: !f.memory_enabled }))}>
+                    <input type="checkbox" checked={form.memory_enabled} onChange={() => {}} />
+                    <span>Enable Memory</span>
+                  </div>
+                  {Object.keys(CHANNEL_FIELDS).map((channel) => (
+                    <div key={channel} style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontSize: 13 }}
+                      onClick={() => setForm((f) => ({
+                        ...f,
+                        channel_configs: {
+                          ...f.channel_configs,
+                          [channel]: { ...(f.channel_configs?.[channel] || {}), enabled: !f.channel_configs?.[channel]?.enabled },
+                        },
+                      }))}>
+                      <input type="checkbox" checked={form.channel_configs?.[channel]?.enabled || false} onChange={() => {}} />
+                      <span>Enable {channel.charAt(0).toUpperCase() + channel.slice(1)}</span>
+                    </div>
+                  ))}
+                </div>
+                {Object.entries(CHANNEL_FIELDS).map(([channel, fields]) =>
+                  form.channel_configs?.[channel]?.enabled && (
+                    <div key={channel} style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 8 }}>
+                      {fields.map((field) => (
+                        <input
+                          key={field.key}
+                          type="password"
+                          placeholder={editing ? `${field.label} — leave blank to keep existing` : field.placeholder}
+                          value={form.channel_configs?.[channel]?.[field.key] || ""}
+                          onChange={(e) => setForm((f) => ({
+                            ...f,
+                            channel_configs: {
+                              ...f.channel_configs,
+                              [channel]: { ...(f.channel_configs?.[channel] || {}), [field.key]: e.target.value },
+                            },
+                          }))}
+                        />
+                      ))}
+                    </div>
+                  )
+                )}
               </div>
               <div className="form-group">
                 <label>Max Tokens (guardrail)</label>

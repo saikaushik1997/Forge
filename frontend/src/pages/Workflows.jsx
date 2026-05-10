@@ -16,6 +16,8 @@ export default function Workflows() {
   const [runInput, setRunInput] = useState("");
   const [runEvents, setRunEvents] = useState([]);
   const [running, setRunning] = useState(false);
+  const [cloneModal, setCloneModal] = useState(null);
+  const [cloneName, setCloneName] = useState("");
 
   useEffect(() => {
     load();
@@ -54,6 +56,24 @@ export default function Workflows() {
   async function deleteWorkflow(id) {
     if (!confirm("Delete this workflow?")) return;
     await workflowsApi.delete(id);
+    await load();
+  }
+
+  async function useTemplate(e) {
+    e.preventDefault();
+    await workflowsApi.create({
+      name: cloneName,
+      description: cloneModal.description,
+      graph_definition: cloneModal.graph_definition,
+      is_template: false,
+    });
+    setCloneModal(null);
+    setCloneName("");
+    await load();
+  }
+
+  async function toggleTelegram(wf) {
+    await workflowsApi.update(wf.id, { telegram_enabled: !wf.telegram_enabled });
     await load();
   }
 
@@ -137,18 +157,47 @@ export default function Workflows() {
         <button className="btn btn-primary" onClick={() => setShowNewModal(true)}>+ New Workflow</button>
       </div>
 
-      {workflows.length === 0 ? (
+      {workflows.some((wf) => wf.is_template) && (
+        <>
+          <h2 style={{ fontSize: 14, color: "#64748b", letterSpacing: "0.06em", marginBottom: 12 }}>TEMPLATES</h2>
+          <div className="grid" style={{ marginBottom: 32 }}>
+            {workflows.filter((wf) => wf.is_template).map((wf) => (
+              <div className="card" key={wf.id} style={{ borderColor: "#7c6af733" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
+                  <strong style={{ fontSize: 16 }}>{wf.name}</strong>
+                  <span className="badge badge-purple">template</span>
+                </div>
+                <p style={{ color: "#64748b", fontSize: 13, marginBottom: 16 }}>{wf.description || "No description"}</p>
+                <p style={{ color: "#475569", fontSize: 12, marginBottom: 16 }}>
+                  {wf.graph_definition?.nodes?.length || 0} agents · {wf.graph_definition?.edges?.length || 0} connections
+                </p>
+                <button
+                  className="btn btn-primary"
+                  style={{ width: "100%" }}
+                  onClick={() => { setCloneModal(wf); setCloneName(wf.name); }}
+                >Use Template</button>
+              </div>
+            ))}
+          </div>
+          <h2 style={{ fontSize: 14, color: "#64748b", letterSpacing: "0.06em", marginBottom: 12 }}>MY WORKFLOWS</h2>
+        </>
+      )}
+
+      {workflows.filter((wf) => !wf.is_template).length === 0 ? (
         <div className="empty-state">
           <h3>No workflows yet</h3>
-          <p>Create a workflow to connect agents into a pipeline.</p>
+          <p>Create a workflow or use a template above.</p>
         </div>
       ) : (
         <div className="grid">
-          {workflows.map((wf) => (
+          {workflows.filter((wf) => !wf.is_template).map((wf) => (
             <div className="card" key={wf.id}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
                 <strong style={{ fontSize: 16 }}>{wf.name}</strong>
-                {wf.is_template && <span className="badge badge-purple">template</span>}
+                <div style={{ display: "flex", gap: 6 }}>
+                  {wf.is_template && <span className="badge badge-purple">template</span>}
+                  {wf.telegram_enabled && <span className="badge badge-green">✈ telegram</span>}
+                </div>
               </div>
               <p style={{ color: "#64748b", fontSize: 13, marginBottom: 12 }}>{wf.description || "No description"}</p>
               <p style={{ color: "#475569", fontSize: 12, marginBottom: 16 }}>
@@ -157,6 +206,12 @@ export default function Workflows() {
               <div style={{ display: "flex", gap: 8 }}>
                 <button className="btn btn-ghost" style={{ flex: 1 }} onClick={() => openCanvas(wf)}>Canvas</button>
                 <button className="btn btn-primary" style={{ flex: 1 }} onClick={() => { setRunModal(wf); setRunInput(""); setRunEvents([]); }}>▶ Run</button>
+                <button
+                  className="btn btn-ghost"
+                  style={{ color: wf.telegram_enabled ? "#4ade80" : "#64748b", borderColor: wf.telegram_enabled ? "#4ade80" : undefined }}
+                  title={wf.telegram_enabled ? "Disable Telegram" : "Enable for Telegram"}
+                  onClick={() => toggleTelegram(wf)}
+                >✈</button>
                 <button className="btn btn-danger" onClick={() => deleteWorkflow(wf.id)}>Del</button>
               </div>
             </div>
@@ -227,6 +282,24 @@ export default function Workflows() {
               </div>
               <div className="modal-actions">
                 <button type="button" className="btn btn-ghost" onClick={() => setShowNewModal(false)}>Cancel</button>
+                <button type="submit" className="btn btn-primary">Create</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {cloneModal && (
+        <div className="modal-backdrop" onClick={() => setCloneModal(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h2>Use Template — {cloneModal.name}</h2>
+            <form onSubmit={useTemplate}>
+              <div className="form-group">
+                <label>Workflow Name</label>
+                <input required value={cloneName} onChange={(e) => setCloneName(e.target.value)} placeholder="My Workflow" />
+              </div>
+              <div className="modal-actions">
+                <button type="button" className="btn btn-ghost" onClick={() => setCloneModal(null)}>Cancel</button>
                 <button type="submit" className="btn btn-primary">Create</button>
               </div>
             </form>

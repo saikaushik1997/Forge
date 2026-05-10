@@ -5,6 +5,8 @@ from pydantic import BaseModel
 from typing import Optional
 from database import get_db
 from models.agent import Agent
+from config import settings
+from bot.crypto import encrypt_token
 
 router = APIRouter(prefix="/agents", tags=["agents"])
 
@@ -17,7 +19,7 @@ class AgentCreate(BaseModel):
     tools: list[str] = []
     memory_enabled: bool = False
     guardrails: dict = {}
-    channel: Optional[str] = None
+    channel_configs: dict = {}
 
 
 class AgentUpdate(BaseModel):
@@ -28,7 +30,7 @@ class AgentUpdate(BaseModel):
     tools: Optional[list[str]] = None
     memory_enabled: Optional[bool] = None
     guardrails: Optional[dict] = None
-    channel: Optional[str] = None
+    channel_configs: Optional[dict] = None
 
 
 class AgentResponse(BaseModel):
@@ -40,7 +42,7 @@ class AgentResponse(BaseModel):
     tools: list[str]
     memory_enabled: bool
     guardrails: dict
-    channel: Optional[str]
+    channel_configs: dict  # tokens masked — each channel has has_token bool instead
     created_at: str
     updated_at: str
 
@@ -57,10 +59,37 @@ class AgentResponse(BaseModel):
             tools=agent.tools or [],
             memory_enabled=agent.memory_enabled,
             guardrails=agent.guardrails or {},
-            channel=agent.channel,
+            channel_configs=_mask_configs(agent.channel_configs or {}),
             created_at=agent.created_at.isoformat(),
             updated_at=agent.updated_at.isoformat(),
         )
+
+
+def _maybe_encrypt(token: Optional[str]) -> Optional[str]:
+    if not token:
+        return None
+    if not settings.forge_encryption_key:
+        return token
+    return encrypt_token(token)
+
+
+def _encrypt_configs(configs: dict) -> dict:
+    result = {}
+    for channel, cfg in configs.items():
+        result[channel] = {**cfg}
+        if cfg.get("bot_token"):
+            result[channel]["bot_token"] = _maybe_encrypt(cfg["bot_token"])
+    return result
+
+
+def _mask_configs(configs: dict) -> dict:
+    """Replace raw tokens with has_token booleans for API responses."""
+    result = {}
+    for channel, cfg in configs.items():
+        masked = {k: v for k, v in cfg.items() if k != "bot_token"}
+        masked["has_token"] = bool(cfg.get("bot_token"))
+        result[channel] = masked
+    return result
 
 
 @router.get("/", response_model=list[AgentResponse])
@@ -73,7 +102,9 @@ async def list_agents(db: AsyncSession = Depends(get_db)):
 async def create_agent(body: AgentCreate, db: AsyncSession = Depends(get_db)):
     import traceback as tb
     try:
-        agent = Agent(**body.model_dump())
+        data = body.model_dump()
+        data["channel_configs"] = _encrypt_configs(data.get("channel_configs") or {})
+        agent = Agent(**data)
         db.add(agent)
         await db.commit()
         await db.refresh(agent)
@@ -95,7 +126,20 @@ async def update_agent(agent_id: str, body: AgentUpdate, db: AsyncSession = Depe
     agent = await db.get(Agent, agent_id)
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
-    for field, value in body.model_dump(exclude_none=True).items():
+    updates = body.model_dump(exclude_none=True)
+    if "channel_configs" in updates:
+        # Merge with existing — preserve stored tokens if new submission has no bot_token
+        existing = agent.channel_configs or {}
+        incoming = updates["channel_configs"]
+        merged = {}
+        for channel, cfg in incoming.items():
+            merged[channel] = {**existing.get(channel, {}), **cfg}
+            if cfg.get("bot_token"):
+                merged[channel]["bot_token"] = _maybe_encrypt(cfg["bot_token"])
+            elif not cfg.get("bot_token") and existing.get(channel, {}).get("bot_token"):
+                merged[channel]["bot_token"] = existing[channel]["bot_token"]
+        updates["channel_configs"] = merged
+    for field, value in updates.items():
         setattr(agent, field, value)
     await db.commit()
     await db.refresh(agent)

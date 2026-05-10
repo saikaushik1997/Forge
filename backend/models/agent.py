@@ -20,6 +20,6 @@ class Agent(Base):
     tools: Mapped[list] = mapped_column(JSON, default=list)
     memory_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     guardrails: Mapped[dict] = mapped_column(JSON, default=dict)
-    channel: Mapped[str | None] = mapped_column(String, nullable=True)
+    channel_configs: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc, onupdate=now_utc)
