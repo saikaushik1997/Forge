@@ -60,7 +60,11 @@ PostgreSQL runs fully locally inside Docker Compose alongside the other services
 - It's the realistic choice for a production-grade platform
 
 ### Async Messaging: Redis (pub/sub)
-Agent-to-agent communication is asynchronous by requirement. Redis pub/sub is the simplest reliable mechanism: agent A publishes a message to a channel, agent B subscribes and picks it up independently of the HTTP request cycle. Redis also runs as a Docker Compose service — no external dependency.
+Agent-to-agent communication is asynchronous by requirement. The approach depends on scope:
+
+**Within a single workflow**, LangGraph manages execution. Nodes run sequentially by default — this is intentional, giving deterministic and inspectable execution. Where true parallelism is needed (e.g. Research Bot and Fact-Check Bot running simultaneously), LangGraph's parallel branching runs those nodes concurrently and merges results before continuing.
+
+**Across workflow boundaries**, Redis pub/sub handles async handoffs: incoming Telegram messages trigger workflow runs, completed runs stream events to the monitoring UI, and one workflow can trigger another — all without any component blocking on another. Redis runs as a Docker Compose service with no external dependency.
 
 ### Messaging Channel: Telegram
 Telegram was chosen over Slack and WhatsApp because:
