@@ -118,7 +118,7 @@ Telegram was chosen over Slack and WhatsApp because:
 git clone https://github.com/saikaushik1997/forge
 cd forge
 cp .env.example .env
-# Fill in ANTHROPIC_API_KEY in .env (TELEGRAM_BOT_TOKEN is optional)
+# Edit .env — see key guide below
 docker compose up
 ```
 
@@ -129,7 +129,15 @@ Everything starts in one command — PostgreSQL, Redis, backend, and frontend al
 
 The first run builds images and takes a minute. Subsequent starts are instant since images are cached.
 
-> **Note:** If you have an existing database and are upgrading from a version without cost tracking, the backend automatically runs `ALTER TABLE workflow_runs ADD COLUMN IF NOT EXISTS total_cost` on startup — no manual migration needed.
+### Environment Variables
+
+| Variable | Required | Purpose |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | Yes | Claude API access |
+| `TELEGRAM_BOT_TOKEN` | Optional | Telegram channel integration |
+| `FORGE_ENCRYPTION_KEY` | If using Telegram | Encrypts bot tokens at rest — generate with: `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` |
+| `TAVILY_API_KEY` | If using web_search tool | Real-time web search for agents |
+| `LANGCHAIN_API_KEY` | Optional | LangSmith tracing (also set `LANGCHAIN_TRACING_V2=true`) |
 
 ---
 
@@ -155,13 +163,13 @@ forge/
 
 ## Running Tests
 
-46 tests across unit and integration suites.
+53 tests across unit and integration suites.
 
 | Suite | File | Tests | Needs server? |
 |---|---|---|---|
 | Unit | `test_unit_crypto.py` | 5 | No |
 | Unit | `test_unit_agent_configs.py` | 11 | No |
-| Unit | `test_unit_templates.py` | 16 | No |
+| Unit | `test_unit_templates.py` | 23 | No |
 | Integration | `test_agents.py` | 9 | Yes |
 | Integration | `test_workflow_execution.py` | 5 | Yes + API key |
 
