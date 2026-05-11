@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { runsApi } from "../api/runs";
+import { runsApi, connectRunSocket } from "../api/runs";
 import { workflowsApi } from "../api/workflows";
 
 const STATUS_COLOR = { running: "#facc15", completed: "#4ade80", failed: "#f87171" };
@@ -17,7 +17,9 @@ export default function Monitor() {
   const [wfNames, setWfNames] = useState({});
   const [selected, setSelected] = useState(null);
   const [messages, setMessages] = useState([]);
+  const [liveEvents, setLiveEvents] = useState([]);
   const pollRef = useRef(null);
+  const wsRef = useRef(null);
 
   useEffect(() => {
     loadAll();
@@ -32,23 +34,31 @@ export default function Monitor() {
   }
 
   async function selectRun(run) {
+    // Close any existing WebSocket
+    if (wsRef.current) {
+      wsRef.current.close();
+      wsRef.current = null;
+    }
+    setLiveEvents([]);
     setSelected(run);
     setMessages(await runsApi.messages(run.id));
+
+    if (run.status === "running") {
+      const ws = connectRunSocket(run.id, (ev) => {
+        if (ev.type === "error") return;
+        setLiveEvents((prev) => [...prev, ev]);
+        if (ev.type === "run_complete" || ev.type === "run_failed") {
+          setSelected((s) => s?.id === run.id ? { ...s, status: ev.type === "run_complete" ? "completed" : "failed", output: ev.output, total_tokens: ev.tokens, total_cost: ev.cost } : s);
+          runsApi.messages(run.id).then(setMessages);
+        }
+      });
+      wsRef.current = ws;
+    }
   }
 
-  // Refresh selected run while it's still running
-  useEffect(() => {
-    if (!selected || selected.status !== "running") return;
-    const t = setInterval(async () => {
-      const [updated, msgs] = await Promise.all([
-        runsApi.get(selected.id),
-        runsApi.messages(selected.id),
-      ]);
-      setSelected(updated);
-      setMessages(msgs);
-    }, 2000);
-    return () => clearInterval(t);
-  }, [selected?.id, selected?.status]);
+  // Cleanup WebSocket on unmount
+  useEffect(() => () => wsRef.current?.close(), []);
+
 
   return (
     <div style={{ display: "flex", gap: 16, height: "calc(100vh - 64px)" }}>
@@ -96,6 +106,7 @@ export default function Monitor() {
             {run.total_tokens > 0 && (
               <div style={{ fontSize: 11, color: "#475569", paddingLeft: 15, marginTop: 2 }}>
                 {run.total_tokens.toLocaleString()} tokens
+                {run.total_cost > 0 && ` · $${run.total_cost.toFixed(4)}`}
               </div>
             )}
           </div>
@@ -125,11 +136,14 @@ export default function Monitor() {
               >
                 {selected.status}
               </span>
-              {selected.total_tokens > 0 && (
-                <span style={{ fontSize: 12, color: "#64748b", marginLeft: "auto" }}>
-                  {selected.total_tokens.toLocaleString()} tokens
-                </span>
-              )}
+              <span style={{ fontSize: 12, color: "#64748b", marginLeft: "auto", display: "flex", gap: 12 }}>
+                {selected.total_tokens > 0 && (
+                  <span>{selected.total_tokens.toLocaleString()} tokens</span>
+                )}
+                {selected.total_cost > 0 && (
+                  <span style={{ color: "#4ade80" }}>${selected.total_cost.toFixed(4)}</span>
+                )}
+              </span>
             </div>
 
             {/* Input */}
@@ -138,6 +152,24 @@ export default function Monitor() {
                 {selected.input}
               </div>
             </Section>
+
+            {/* Live event feed */}
+            {liveEvents.length > 0 && (
+              <Section label="LIVE LOG">
+                <div style={{ background: "#0f1117", borderRadius: 8, padding: 12, fontFamily: "monospace", fontSize: 12, display: "flex", flexDirection: "column", gap: 6 }}>
+                  {liveEvents.map((ev, i) => (
+                    <div key={i} style={{ color: ev.type === "run_failed" ? "#f87171" : ev.type === "run_complete" ? "#4ade80" : "#e2e8f0" }}>
+                      {ev.type === "node_start" && <span style={{ color: "#7c6af7" }}>▶ <b>{ev.agent}</b> started</span>}
+                      {ev.type === "tool_call" && <span style={{ color: "#facc15" }}>⚙ <b>{ev.agent}</b> → {ev.tool}</span>}
+                      {ev.type === "node_complete" && <span>✓ <b>{ev.agent}</b> ({ev.tokens} tokens{ev.cost > 0 ? ` · $${ev.cost.toFixed(4)}` : ""})</span>}
+                      {ev.type === "run_complete" && <span>✓ Done — {ev.tokens?.toLocaleString()} tokens{ev.cost > 0 ? ` · $${ev.cost.toFixed(4)}` : ""}</span>}
+                      {ev.type === "run_failed" && <span>✗ Failed: {ev.error}</span>}
+                    </div>
+                  ))}
+                  {selected.status === "running" && <span style={{ color: "#475569" }}>…</span>}
+                </div>
+              </Section>
+            )}
 
             {/* Message thread */}
             {messages.length > 0 && (
@@ -171,8 +203,8 @@ export default function Monitor() {
               </Section>
             )}
 
-            {selected.status === "running" && (
-              <div style={{ color: "#facc15", fontSize: 13, marginTop: 12 }}>⏳ Run in progress…</div>
+            {selected.status === "running" && liveEvents.length === 0 && (
+              <div style={{ color: "#facc15", fontSize: 13, marginTop: 12 }}>⏳ Connecting…</div>
             )}
           </>
         )}

@@ -14,8 +14,13 @@ from runtime.engine import execute_workflow
 
 router = APIRouter(tags=["runs"])
 
-# in-memory event queues per run_id for WebSocket streaming
-_run_queues: dict[str, asyncio.Queue] = {}
+# broadcast queues per run_id — list so multiple WS consumers can subscribe simultaneously
+_run_queues: dict[str, list[asyncio.Queue]] = {}
+
+
+def _broadcast(run_id: str, event):
+    for q in _run_queues.get(run_id, []):
+        q.put_nowait(event)
 
 
 def now_iso():
@@ -38,8 +43,7 @@ async def create_run(body: RunCreate, db: AsyncSession = Depends(get_db)):
     await db.commit()
     await db.refresh(run)
 
-    queue: asyncio.Queue = asyncio.Queue()
-    _run_queues[run.id] = queue
+    _run_queues[run.id] = []
 
     # load agents
     nodes = workflow.graph_definition.get("nodes", [])
@@ -49,7 +53,7 @@ async def create_run(body: RunCreate, db: AsyncSession = Depends(get_db)):
     agents_map = {a.id: {"id": a.id, "name": a.name, "role": a.role, "system_prompt": a.system_prompt, "model": a.model, "tools": a.tools or [], "guardrails": a.guardrails, "memory_enabled": a.memory_enabled} for a in agents_list}
 
     async def on_event(event: dict):
-        await queue.put(event)
+        _broadcast(run.id, event)
 
     async def run_and_finish():
         async with AsyncSessionLocal() as session:
@@ -57,21 +61,24 @@ async def create_run(body: RunCreate, db: AsyncSession = Depends(get_db)):
                 final_state = await execute_workflow(workflow, agents_map, body.input, run.id, on_event, session)
                 output = final_state["agent_outputs"][-1]["content"] if final_state["agent_outputs"] else ""
                 tokens = final_state["token_count"]
+                cost = final_state.get("cost", 0.0)
                 run_record = await session.get(WorkflowRun, run.id)
                 run_record.status = "completed"
                 run_record.output = output
                 run_record.total_tokens = tokens
+                run_record.total_cost = cost
                 run_record.completed_at = datetime.utcnow()
                 await session.commit()
-                await queue.put({"type": "run_complete", "run_id": run.id, "output": output, "tokens": tokens})
+                _broadcast(run.id, {"type": "run_complete", "run_id": run.id, "output": output, "tokens": tokens, "cost": cost})
             except Exception as e:
                 run_record = await session.get(WorkflowRun, run.id)
                 if run_record:
                     run_record.status = "failed"
                     await session.commit()
-                await queue.put({"type": "run_failed", "run_id": run.id, "error": str(e)})
+                _broadcast(run.id, {"type": "run_failed", "run_id": run.id, "error": str(e)})
             finally:
-                await queue.put(None)  # sentinel to close WebSocket
+                _broadcast(run.id, None)  # sentinel — tells all consumers to close
+                _run_queues.pop(run.id, None)
 
     asyncio.create_task(run_and_finish())
 
@@ -90,6 +97,7 @@ async def get_run(run_id: str, db: AsyncSession = Depends(get_db)):
         "input": run.input,
         "output": run.output,
         "total_tokens": run.total_tokens,
+        "total_cost": run.total_cost,
         "started_at": run.started_at.isoformat(),
         "completed_at": run.completed_at.isoformat() if run.completed_at else None,
     }
@@ -110,7 +118,7 @@ async def list_runs(db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(WorkflowRun).order_by(WorkflowRun.started_at.desc()).limit(50))
     runs = result.scalars().all()
     return [
-        {"id": r.id, "workflow_id": r.workflow_id, "status": r.status, "input": r.input, "output": r.output, "total_tokens": r.total_tokens, "started_at": r.started_at.isoformat()}
+        {"id": r.id, "workflow_id": r.workflow_id, "status": r.status, "input": r.input, "output": r.output, "total_tokens": r.total_tokens, "total_cost": r.total_cost, "started_at": r.started_at.isoformat()}
         for r in runs
     ]
 
@@ -118,11 +126,12 @@ async def list_runs(db: AsyncSession = Depends(get_db)):
 @router.websocket("/ws/runs/{run_id}")
 async def run_websocket(websocket: WebSocket, run_id: str):
     await websocket.accept()
-    queue = _run_queues.get(run_id)
-    if not queue:
+    if run_id not in _run_queues:
         await websocket.send_text(json.dumps({"type": "error", "message": "Run not found or already completed"}))
         await websocket.close()
         return
+    queue: asyncio.Queue = asyncio.Queue()
+    _run_queues[run_id].append(queue)
     try:
         while True:
             event = await queue.get()
@@ -132,5 +141,7 @@ async def run_websocket(websocket: WebSocket, run_id: str):
     except WebSocketDisconnect:
         pass
     finally:
-        _run_queues.pop(run_id, None)
+        listeners = _run_queues.get(run_id)
+        if listeners and queue in listeners:
+            listeners.remove(queue)
         await websocket.close()

@@ -8,6 +8,9 @@ class Settings(BaseSettings):
     telegram_bot_token: str = ""
     tavily_api_key: str = ""
     forge_encryption_key: str = ""
+    langchain_tracing_v2: str = ""
+    langchain_api_key: str = ""
+    langchain_project: str = "forge"
 
     class Config:
         env_file = "../.env"

@@ -49,6 +49,7 @@ async def _fire_run(schedule_id: str):
             run_record.status = "completed"
             run_record.output = output
             run_record.total_tokens = final_state["token_count"]
+            run_record.total_cost = final_state.get("cost", 0.0)
             run_record.completed_at = datetime.utcnow()
         except Exception as e:
             run_record = await db.get(WorkflowRun, run.id)

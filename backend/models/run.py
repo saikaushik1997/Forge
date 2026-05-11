@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from sqlalchemy import String, Integer, JSON, DateTime, Text, ForeignKey
+from sqlalchemy import String, Integer, Float, JSON, DateTime, Text, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column
 from database import Base
 from models.agent import now_utc
@@ -15,6 +15,7 @@ class WorkflowRun(Base):
     input: Mapped[str] = mapped_column(Text, nullable=False)
     output: Mapped[str | None] = mapped_column(Text, nullable=True)
     total_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    total_cost: Mapped[float] = mapped_column(Float, default=0.0)
     started_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 

@@ -17,6 +17,17 @@ from config import settings
 
 MAX_LOOP_ITERATIONS = 3
 
+MODEL_PRICING = {
+    "claude-opus-4-7":           {"input": 15.0,  "output": 75.0},
+    "claude-sonnet-4-6":         {"input": 3.0,   "output": 15.0},
+    "claude-haiku-4-5-20251001": {"input": 0.80,  "output": 4.0},
+}
+
+
+def _compute_cost(model: str, input_tokens: int, output_tokens: int) -> float:
+    pricing = MODEL_PRICING.get(model, {"input": 3.0, "output": 15.0})
+    return (input_tokens * pricing["input"] + output_tokens * pricing["output"]) / 1_000_000
+
 
 class AgentState(TypedDict):
     messages: Annotated[list, operator.add]       # initial user msg + all assistant msgs
@@ -24,6 +35,7 @@ class AgentState(TypedDict):
     run_id: str
     token_count: Annotated[int, operator.add]
     loop_count: Annotated[int, operator.add]      # increments each node execution; caps feedback loops
+    cost: Annotated[float, operator.add]
 
 
 def _find_back_edges(nodes: list, edges: list) -> set:
@@ -152,6 +164,7 @@ def make_agent_node(agent_config: dict, run_id: str, on_event):
         tool_rounds = 0
         max_tool_rounds = 5
 
+        total_cost = 0.0
         while True:
             kwargs = dict(
                 model=agent_config["model"],
@@ -165,7 +178,10 @@ def make_agent_node(agent_config: dict, run_id: str, on_event):
             first_call = False
 
             response = await client.messages.create(**kwargs)
-            total_tokens += response.usage.input_tokens + response.usage.output_tokens
+            in_tok = response.usage.input_tokens
+            out_tok = response.usage.output_tokens
+            total_tokens += in_tok + out_tok
+            total_cost += _compute_cost(agent_config["model"], in_tok, out_tok)
 
             if response.stop_reason == "end_turn":
                 for block in response.content:
@@ -193,15 +209,22 @@ def make_agent_node(agent_config: dict, run_id: str, on_event):
                     kwargs.pop("tools", None)
                     kwargs.pop("tool_choice", None)
             else:
+                # max_tokens or any other stop reason — extract whatever text was generated
+                for block in response.content:
+                    if block.type == "text":
+                        output = block.text
+                if not output:
+                    output = input_content
                 break
 
-        await on_event({"type": "node_complete", "agent": agent_config["name"], "output": output, "tokens": total_tokens, "run_id": run_id})
+        await on_event({"type": "node_complete", "agent": agent_config["name"], "output": output, "tokens": total_tokens, "cost": total_cost, "run_id": run_id})
 
         return {
             "agent_outputs": [{"agent": agent_config["name"], "content": output}],
             "messages": [{"role": "assistant", "agent": agent_config["name"], "content": output}],
             "token_count": total_tokens,
             "loop_count": 1,
+            "cost": total_cost,
         }
 
     node.__name__ = agent_config["name"]
@@ -271,6 +294,7 @@ async def execute_workflow(workflow, agents_map, run_input, run_id, on_event, db
         "run_id": run_id,
         "token_count": 0,
         "loop_count": 0,
+        "cost": 0.0,
     })
 
     prev_agent = "user"

@@ -253,9 +253,17 @@ export default function Workflows() {
       )}
 
       {runModal && (
-        <div className="modal-backdrop" onClick={() => !running && setRunModal(null)}>
+        <div className="modal-backdrop" onClick={() => setRunModal(null)}>
           <div className="modal" style={{ width: 600 }} onClick={(e) => e.stopPropagation()}>
-            <h2>▶ Run — {runModal.name}</h2>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+              <h2 style={{ margin: 0 }}>▶ Run — {runModal.name}</h2>
+              <button
+                type="button"
+                onClick={() => setRunModal(null)}
+                style={{ background: "none", border: "none", color: "#64748b", fontSize: 20, cursor: "pointer", lineHeight: 1, padding: "0 4px" }}
+                title="Dismiss"
+              >×</button>
+            </div>
             <form onSubmit={startRun}>
               <div className="form-group">
                 <label>Input</label>
@@ -279,15 +287,22 @@ export default function Workflows() {
                       {ev.type === "tool_call" && <span style={{ color: "#facc15" }}>🔧 <b>{ev.agent}</b> calling <b>{ev.tool}</b></span>}
                       {ev.type === "node_complete" && (
                         <div>
-                          <span>✅ <b>{ev.agent}</b> finished ({ev.tokens} tokens)</span>
+                          <span>✅ <b>{ev.agent}</b> finished ({ev.tokens} tokens{ev.cost > 0 ? ` · $${ev.cost.toFixed(4)}` : ""})</span>
                           <div style={{ color: "#94a3b8", marginTop: 4, whiteSpace: "pre-wrap" }}>{ev.output}</div>
                         </div>
                       )}
-                      {ev.type === "run_complete" && <span>🎉 Done! Total tokens: {ev.tokens}</span>}
+                      {ev.type === "run_complete" && (
+                        <span>🎉 Done! {ev.tokens?.toLocaleString()} tokens{ev.cost > 0 ? ` · $${ev.cost.toFixed(4)}` : ""}</span>
+                      )}
                       {ev.type === "run_failed" && <span>❌ Failed: {ev.error}</span>}
                     </div>
                   ))}
-                  {running && <span style={{ color: "#7c6af7" }}>⏳ Running…</span>}
+                  {running && (
+                    <div style={{ marginTop: 8 }}>
+                      <span style={{ color: "#7c6af7" }}>⏳ Running…</span>
+                      <span style={{ color: "#475569", marginLeft: 12, fontSize: 11 }}>Close this window — the run continues in the background.</span>
+                    </div>
+                  )}
                 </div>
                 {!running && (
                   <div className="modal-actions">

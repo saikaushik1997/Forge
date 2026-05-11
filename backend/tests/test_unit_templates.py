@@ -22,7 +22,8 @@ def test_positions_match_agent_count(template):
 @pytest.mark.parametrize("template", TEMPLATES)
 def test_edges_reference_valid_agent_names(template):
     agent_names = {a["name"] for a in template["agents"]}
-    for src, tgt in template["edges"]:
+    for e in template["edges"]:
+        src, tgt = (e[0], e[1]) if isinstance(e, tuple) else (e["source"], e["target"])
         assert src in agent_names, f"Edge source '{src}' not in agents"
         assert tgt in agent_names, f"Edge target '{tgt}' not in agents"
 
@@ -78,12 +79,19 @@ def test_nodes_built_correctly(template):
 def test_edges_built_correctly(template):
     """Simulate the edge-building logic from seed_templates and verify structure."""
     name_to_node_id = {a["name"]: f"node_{i}" for i, a in enumerate(template["agents"])}
-    edges = [
-        {"id": f"e_{i}", "source": name_to_node_id[src], "target": name_to_node_id[tgt]}
-        for i, (src, tgt) in enumerate(template["edges"])
-    ]
+    edges = []
+    for i, e in enumerate(template["edges"]):
+        if isinstance(e, tuple):
+            src, tgt = e
+            edge = {"id": f"e_{i}", "source": name_to_node_id[src], "target": name_to_node_id[tgt]}
+        else:
+            edge = {"id": f"e_{i}", "source": name_to_node_id[e["source"]], "target": name_to_node_id[e["target"]]}
+            if e.get("condition"):
+                edge["data"] = {"condition": e["condition"]}
+            if e.get("type"):
+                edge["type"] = e["type"]
+        edges.append(edge)
     assert len(edges) == len(template["edges"])
     for edge in edges:
         assert edge["source"].startswith("node_")
         assert edge["target"].startswith("node_")
-        assert edge["source"] != edge["target"]

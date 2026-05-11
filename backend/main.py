@@ -1,4 +1,5 @@
 import asyncio
+import os
 from contextlib import asynccontextmanager
 import traceback
 from fastapi import FastAPI, Request
@@ -14,11 +15,18 @@ from bot.telegram_bot import start_bots, stop_bots
 from runtime.templates import seed_templates
 from runtime.scheduler import scheduler_loop
 from database import AsyncSessionLocal
+from config import settings
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    if settings.langchain_tracing_v2:
+        os.environ["LANGCHAIN_TRACING_V2"] = settings.langchain_tracing_v2
+        os.environ["LANGCHAIN_API_KEY"] = settings.langchain_api_key
+        os.environ["LANGCHAIN_PROJECT"] = settings.langchain_project or "forge"
+
     await create_tables()
+    await _migrate_db()
     async with AsyncSessionLocal() as db:
         await seed_templates(db)
     app.state.bots = await start_bots()
@@ -26,6 +34,15 @@ async def lifespan(app: FastAPI):
     yield
     app.state.scheduler.cancel()
     await stop_bots(app.state.bots)
+
+
+async def _migrate_db():
+    """Add columns that didn't exist in the initial schema."""
+    from database import engine
+    async with engine.begin() as conn:
+        await conn.execute(__import__("sqlalchemy").text(
+            "ALTER TABLE workflow_runs ADD COLUMN IF NOT EXISTS total_cost FLOAT DEFAULT 0.0"
+        ))
 
 
 app = FastAPI(title="Forge", version="0.1.0", lifespan=lifespan)
