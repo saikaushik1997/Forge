@@ -8,7 +8,8 @@ export const runsApi = {
 };
 
 export function connectRunSocket(runId, onEvent) {
-  const wsUrl = `ws://localhost:8001/api/ws/runs/${runId}`;
+  const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  const wsUrl = `${wsProtocol}//${window.location.host}/ws/runs/${runId}`;
   const ws = new WebSocket(wsUrl);
   ws.onmessage = (e) => onEvent(JSON.parse(e.data));
   ws.onerror = (e) => console.error("WS error", e);
