@@ -1,6 +1,8 @@
 # Forge
 Build, configure, and orchestrate AI agents into collaborative workflows. Real LangGraph runtime, live execution logs, and Telegram integration — in one platform.
 
+**[▶ Watch the demo](https://www.loom.com/share/6b73be9948794717b5b70d50b39f4909)**
+
 ---
 
 ## Architecture Overview
@@ -13,7 +15,7 @@ Build, configure, and orchestrate AI agents into collaborative workflows. Real L
                           │ REST + WebSocket
 ┌─────────────────────────▼───────────────────────────────────┐
 │                    Backend (FastAPI)                        │
-│   Agent API · Workflow API · Execution API · Auth           │
+│   Agent API · Workflow API · Execution API · Schedules      │
 └──────┬──────────────────┬──────────────────┬────────────────┘
        │                  │                  │
 ┌──────▼──────┐  ┌────────▼───────┐  ┌──────▼───────────────┐
@@ -46,9 +48,9 @@ LangGraph was chosen over CrewAI and AutoGen for three reasons:
 AutoGen was ruled out because its conversational multi-agent model doesn't fit structured workflows with explicit routing conditions.
 
 ### Frontend: React + Vite
-Plain React with Vite — no Next.js. Next.js adds server-side rendering and file-based routing, neither of which are needed here. This is a single-page app: a dashboard, a workflow canvas, a monitoring view. Vite gives a fast dev server and a simple static build that FastAPI serves directly. Less infrastructure, same result.
+Plain React with Vite — no Next.js. Next.js adds server-side rendering and file-based routing, neither of which are needed here. This is a single-page app: a dashboard, a workflow canvas, a monitoring view. Vite gives a fast dev server and a simple static build. Less infrastructure, same result.
 
-React Flow is used for the visual workflow builder. It handles the drag-and-drop canvas, node/edge rendering, and connection logic out of the box. Building an equivalent canvas from scratch would be a significant detour from the actual product work.
+React Flow is used for the visual workflow builder. It handles the drag-and-drop canvas, node/edge rendering, and connection logic out of the box.
 
 ### Backend: FastAPI
 FastAPI is async-native, which matters here — agent executions are long-running and the UI needs real-time updates via WebSocket. It also generates OpenAPI docs automatically, making the API self-documenting. Django and Flask were ruled out: Django is too heavy for an API-only backend, and Flask lacks native async support.
@@ -65,7 +67,7 @@ There are two distinct layers of async communication in Forge, and it's worth be
 
 **Within a workflow**, async is handled entirely by LangGraph — not Redis. Each agent node is an `async` function. Sequential nodes run one after another (deterministic, inspectable). Parallel branches (when the graph fans out) run concurrently via `asyncio.gather`, with `Annotated` state reducers merging their outputs safely. No message broker is needed here; LangGraph's state machine is the transport.
 
-**Across the system boundary**, Redis pub/sub handles async handoffs: incoming Telegram messages trigger workflow runs without blocking the bot, completed runs stream events to the monitoring UI via WebSocket, and external triggers (scheduled jobs, webhooks) can fire workflows without coupling to the HTTP layer. Redis runs as a Docker Compose service with no external dependency.
+**Across the system boundary**, Redis pub/sub handles async handoffs: incoming Telegram messages trigger workflow runs without blocking the bot, and completed runs stream events to the monitoring UI via WebSocket. Redis runs as a Docker Compose service with no external dependency.
 
 The alternative — routing all agent-to-agent communication through Redis queues — would mean rebuilding LangGraph's orchestration from scratch (delivery guarantees, fan-in coordination, error propagation) for no observable benefit in a single-host deployment.
 
@@ -81,7 +83,8 @@ Telegram was chosen over Slack and WhatsApp because:
 ## Features
 
 **Agents**
-- Full CRUD — name, role, system prompt, model, tools, guardrails (max tokens), memory toggle, messaging channel config
+- Full CRUD — name, role, system prompt, model, tools, guardrails, memory toggle, messaging channel config
+- **Guardrails** — configurable per agent: max tokens, max tool calls, banned phrases (redacted from output), prompt injection detection
 - **Memory** — when enabled, the agent's last 5 outputs from past runs are injected into its system prompt at execution time, giving it continuity across separate workflow runs
 - **Tools** — web search (Tavily), calculator, datetime; tool calls are real, not simulated
 - **Telegram integration** — configure a bot token per agent; the agent becomes conversational with per-chat history and `/start` / `/reset` commands
@@ -92,11 +95,13 @@ Telegram was chosen over Slack and WhatsApp because:
 - **Feedback loops** — draw a backward edge to create a cycle; the engine detects it via DFS and caps iterations at 3 before forcing the forward path
 - **Parallel execution** — when multiple agents have no dependency between them, LangGraph runs them concurrently via `asyncio.gather`; a fan-in agent receives all their combined outputs
 - **Schedules** — attach cron triggers to any workflow (⏰ button); the scheduler fires runs in the background with a configurable default input
-- **Pre-built templates** — "Research & Summarize" and "Triage & Respond" seeded on startup; "Use Template" clones them into editable copies
+- **Pre-built templates** — Research & Summarize, Triage & Respond, and Code Review Pipeline seeded on startup; "Use Template" clones them into editable copies
 
 **Platform**
-- **Live monitoring** — real-time execution events (node start, tool calls, node complete) streamed via WebSocket; inter-agent messages and token counts visible per run
+- **Live monitoring** — real-time execution events (node start, tool calls, node complete) streamed via WebSocket to both the run modal and the Monitor page simultaneously; multiple subscribers supported
+- **Cost tracking** — per-model token pricing computed on every API response, stored on each run, visible in live events and Monitor
 - **Persistent history** — all runs, messages, and agent outputs stored in PostgreSQL and browsable in the Monitor page
+- **LangSmith observability** — optional; set `LANGCHAIN_TRACING_V2=true` and `LANGCHAIN_API_KEY` in `.env` to enable full LangGraph trace capture
 
 ---
 
@@ -105,7 +110,7 @@ Telegram was chosen over Slack and WhatsApp because:
 ### Prerequisites
 - Docker + Docker Compose
 - An Anthropic API key
-- A Telegram bot token (from [@BotFather](https://t.me/botfather))
+- A Telegram bot token (optional — from [@BotFather](https://t.me/botfather))
 
 ### Setup
 
@@ -113,11 +118,18 @@ Telegram was chosen over Slack and WhatsApp because:
 git clone https://github.com/saikaushik1997/forge
 cd forge
 cp .env.example .env
-# Fill in ANTHROPIC_API_KEY and TELEGRAM_BOT_TOKEN in .env
+# Fill in ANTHROPIC_API_KEY in .env (TELEGRAM_BOT_TOKEN is optional)
 docker compose up
 ```
 
-App is available at `http://localhost:3000`. API docs at `http://localhost:8000/docs`.
+Everything starts in one command — PostgreSQL, Redis, backend, and frontend all run as Docker services.
+
+- App: `http://localhost:3000`
+- API docs: `http://localhost:8001/docs`
+
+The first run builds images and takes a minute. Subsequent starts are instant since images are cached.
+
+> **Note:** If you have an existing database and are upgrading from a version without cost tracking, the backend automatically runs `ALTER TABLE workflow_runs ADD COLUMN IF NOT EXISTS total_cost` on startup — no manual migration needed.
 
 ---
 
@@ -126,16 +138,16 @@ App is available at `http://localhost:3000`. API docs at `http://localhost:8000/
 ```
 forge/
 ├── backend/
-│   ├── api/          # FastAPI route handlers
-│   ├── runtime/      # LangGraph agent execution engine
-│   ├── models/       # SQLAlchemy database models
-│   └── channels/     # Telegram bot integration
+│   ├── api/              # FastAPI route handlers (agents, workflows, runs, schedules)
+│   ├── runtime/          # LangGraph execution engine, scheduler, templates
+│   ├── models/           # SQLAlchemy ORM models
+│   ├── bot/              # Telegram bot integration
+│   └── tests/            # Unit and integration tests
 ├── frontend/
-│   ├── src/
-│   │   ├── pages/    # Dashboard, Agents, Workflows, Monitor
-│   │   ├── components/
-│   │   │   └── WorkflowCanvas.jsx  # React Flow canvas
-│   │   └── api/      # API client
+│   └── src/
+│       ├── pages/        # Dashboard, Agents, Workflows, Monitor
+│       ├── components/   # WorkflowCanvas (React Flow)
+│       └── api/          # API client
 └── docker-compose.yml
 ```
 
@@ -143,7 +155,7 @@ forge/
 
 ## Running Tests
 
-46 tests across two suites. All pass against a running stack.
+46 tests across unit and integration suites.
 
 | Suite | File | Tests | Needs server? |
 |---|---|---|---|
@@ -162,12 +174,10 @@ pytest tests/test_unit_crypto.py tests/test_unit_agent_configs.py tests/test_uni
 
 Covers: Fernet encrypt/decrypt roundtrips, channel config masking and encryption helpers, template graph structure and edge validation.
 
-**Integration tests** — hit a live backend at `localhost:8001`:
+**Integration tests** — require a running stack at `localhost:8001`:
 
 ```bash
-# Start the stack first
 docker compose up -d
-
 cd backend
 pytest tests/test_agents.py tests/test_workflow_execution.py -v
 ```
@@ -201,13 +211,23 @@ Templates are defined in [`backend/runtime/templates.py`](backend/runtime/templa
             "system_prompt": "You are ...",
             "model": "claude-sonnet-4-6",
             "tools": ["web_search"],   # web_search | calculator | datetime
-            "guardrails": {"max_tokens": 1000},
+            "guardrails": {"max_tokens": 1000, "max_tool_calls": 5, "banned_phrases": [], "prompt_injection_detection": False},
         },
         # more agents...
     ],
     "edges": [("Agent A", "Agent B")],     # directed connections by agent name
     "positions": [(250, 80), (250, 280)],  # canvas (x, y) per agent
 }
+```
+
+Edges can also be dicts for conditional or feedback loop edges:
+
+```python
+"edges": [
+    ("Agent A", "Agent B"),                                              # simple
+    {"source": "Agent B", "target": "Agent A", "condition": "revision needed", "type": "feedback"},  # feedback loop
+    {"source": "Agent B", "target": "Agent C", "condition": "approved"},                             # conditional
+]
 ```
 
 2. Clear the existing seeded templates so they re-seed on next startup:
@@ -236,7 +256,6 @@ const CHANNEL_FIELDS = {
     { key: "bot_token",       label: "Bot Token",       placeholder: "xoxb-..." },
     { key: "signing_secret",  label: "Signing Secret",  placeholder: "..." },
   ],
-  // whatsapp, discord, etc.
 };
 ```
 
@@ -267,3 +286,5 @@ The form renders fields automatically — no other frontend changes needed.
 | Scheduling | croniter + asyncio loop | APScheduler, Celery Beat | No extra dependencies; fits cleanly in FastAPI lifespan |
 | Feedback loop termination | loop_count in LangGraph state | External flag / timeout | State is already shared across nodes; incrementing a counter is zero overhead |
 | Conditional routing | Keyword matching in output | LLM-based routing | Deterministic, fast, no extra API calls; sufficient for structured agent prompts |
+| WebSocket broadcasting | In-process queue list per run | Redis pub/sub | Single-host deployment; no cross-process consumers; zero extra infrastructure |
+| Guardrails enforcement | Engine-level post-processing | API-level only | Platform controls output before it reaches downstream agents, not just the model |
