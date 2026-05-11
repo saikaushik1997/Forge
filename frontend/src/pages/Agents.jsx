@@ -18,7 +18,7 @@ const defaultForm = {
   model: "claude-sonnet-4-6",
   tools: [],
   memory_enabled: false,
-  guardrails: { max_tokens: 2000 },
+  guardrails: { max_tokens: 2000, max_tool_calls: 5, banned_phrases: "", prompt_injection_detection: false },
   channel_configs: {},
 };
 
@@ -62,7 +62,10 @@ export default function Agents() {
       model: agent.model,
       tools: agent.tools,
       memory_enabled: agent.memory_enabled,
-      guardrails: agent.guardrails,
+      guardrails: {
+        ...agent.guardrails,
+        banned_phrases: (agent.guardrails?.banned_phrases || []).join(", "),
+      },
       channel_configs: configs,
     });
     setShowModal(true);
@@ -72,7 +75,15 @@ export default function Agents() {
     e.preventDefault();
     setLoading(true);
     try {
-      const payload = { ...form };
+      const payload = {
+        ...form,
+        guardrails: {
+          ...form.guardrails,
+          banned_phrases: form.guardrails.banned_phrases
+            ? form.guardrails.banned_phrases.split(",").map((s) => s.trim()).filter(Boolean)
+            : [],
+        },
+      };
       if (editing) {
         await agentsApi.update(editing, payload);
       } else {
@@ -226,12 +237,41 @@ export default function Agents() {
                 )}
               </div>
               <div className="form-group">
-                <label>Max Tokens (guardrail)</label>
-                <input
-                  type="number"
-                  value={form.guardrails.max_tokens || 2000}
-                  onChange={(e) => setForm((f) => ({ ...f, guardrails: { ...f.guardrails, max_tokens: parseInt(e.target.value) } }))}
-                />
+                <label>Guardrails</label>
+                <div style={{ display: "flex", gap: 12, marginBottom: 10 }}>
+                  <div style={{ flex: 1 }}>
+                    <label style={{ fontSize: 12, color: "#64748b" }}>Max Tokens</label>
+                    <input
+                      type="number"
+                      value={form.guardrails.max_tokens || 2000}
+                      onChange={(e) => setForm((f) => ({ ...f, guardrails: { ...f.guardrails, max_tokens: parseInt(e.target.value) } }))}
+                    />
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <label style={{ fontSize: 12, color: "#64748b" }}>Max Tool Calls</label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={20}
+                      value={form.guardrails.max_tool_calls ?? 5}
+                      onChange={(e) => setForm((f) => ({ ...f, guardrails: { ...f.guardrails, max_tool_calls: parseInt(e.target.value) } }))}
+                    />
+                  </div>
+                </div>
+                <div style={{ marginBottom: 10 }}>
+                  <label style={{ fontSize: 12, color: "#64748b" }}>Banned Phrases <span style={{ color: "#475569" }}>(comma-separated — redacted from output)</span></label>
+                  <input
+                    type="text"
+                    placeholder="e.g. password, SSN, confidential"
+                    value={form.guardrails.banned_phrases || ""}
+                    onChange={(e) => setForm((f) => ({ ...f, guardrails: { ...f.guardrails, banned_phrases: e.target.value } }))}
+                  />
+                </div>
+                <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13 }}
+                  onClick={() => setForm((f) => ({ ...f, guardrails: { ...f.guardrails, prompt_injection_detection: !f.guardrails.prompt_injection_detection } }))}>
+                  <input type="checkbox" checked={form.guardrails.prompt_injection_detection || false} onChange={() => {}} />
+                  Prompt injection detection
+                </label>
               </div>
               <div className="modal-actions">
                 <button type="button" className="btn btn-ghost" onClick={() => setShowModal(false)}>Cancel</button>

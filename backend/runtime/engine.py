@@ -1,4 +1,5 @@
 import os
+import re
 import asyncio
 from collections import defaultdict
 from datetime import datetime
@@ -16,6 +17,19 @@ from config import settings
 
 
 MAX_LOOP_ITERATIONS = 3
+
+INJECTION_PATTERNS = [
+    "ignore previous instructions",
+    "ignore your instructions",
+    "disregard your system prompt",
+    "forget your instructions",
+    "new instructions:",
+    "you are now",
+    "act as if you",
+    "pretend you are",
+    "jailbreak",
+    "dan mode",
+]
 
 MODEL_PRICING = {
     "claude-opus-4-7":           {"input": 15.0,  "output": 75.0},
@@ -138,7 +152,11 @@ def make_agent_node(agent_config: dict, run_id: str, on_event):
 
     tool_names = agent_config.get("tools", [])
     tools = [TOOL_DEFINITIONS[t] for t in tool_names if t in TOOL_DEFINITIONS]
-    max_tokens = agent_config.get("guardrails", {}).get("max_tokens", 2000)
+    guardrails = agent_config.get("guardrails", {})
+    max_tokens = guardrails.get("max_tokens", 2000)
+    max_tool_rounds = guardrails.get("max_tool_calls", 5)
+    banned_phrases = [p.lower() for p in guardrails.get("banned_phrases", []) if p]
+    injection_detection = guardrails.get("prompt_injection_detection", False)
 
     system_prompt = agent_config["system_prompt"]
     if tools:
@@ -157,12 +175,25 @@ def make_agent_node(agent_config: dict, run_id: str, on_event):
         else:
             input_content = state["messages"][0]["content"]
 
+        if injection_detection:
+            lower = input_content.lower()
+            if any(p in lower for p in INJECTION_PATTERNS):
+                matched = next(p for p in INJECTION_PATTERNS if p in lower)
+                output = f"[BLOCKED: Prompt injection detected — '{matched}']"
+                await on_event({"type": "node_complete", "agent": agent_config["name"], "output": output, "tokens": 0, "cost": 0.0, "run_id": run_id})
+                return {
+                    "agent_outputs": [{"agent": agent_config["name"], "content": output}],
+                    "messages": [{"role": "assistant", "agent": agent_config["name"], "content": output}],
+                    "token_count": 0,
+                    "loop_count": 1,
+                    "cost": 0.0,
+                }
+
         messages = [{"role": "user", "content": input_content}]
         total_tokens = 0
         output = ""
         first_call = True
         tool_rounds = 0
-        max_tool_rounds = 5
 
         total_cost = 0.0
         while True:
@@ -208,6 +239,7 @@ def make_agent_node(agent_config: dict, run_id: str, on_event):
                 if tool_rounds >= max_tool_rounds:
                     kwargs.pop("tools", None)
                     kwargs.pop("tool_choice", None)
+                    first_call = False
             else:
                 # max_tokens or any other stop reason — extract whatever text was generated
                 for block in response.content:
@@ -216,6 +248,9 @@ def make_agent_node(agent_config: dict, run_id: str, on_event):
                 if not output:
                     output = input_content
                 break
+
+        for phrase in banned_phrases:
+            output = re.sub(re.escape(phrase), "[REDACTED]", output, flags=re.IGNORECASE)
 
         await on_event({"type": "node_complete", "agent": agent_config["name"], "output": output, "tokens": total_tokens, "cost": total_cost, "run_id": run_id})
 
